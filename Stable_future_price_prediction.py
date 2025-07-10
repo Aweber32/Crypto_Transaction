@@ -9,11 +9,9 @@ import os
 import json
 from datetime import datetime
 
-#Below routes are used for local development
-connection_string = "DefaultEndpointsProtocol=https;AccountName=cryptomodel;AccountKey=D9g+2y6lewuPErJCyyDH5fSqtrygF416RNycECZEntfcT//ALGNzdgMgfisFsBbjamn7rJoqd8F5+AStbMSsXQ==;EndpointSuffix=core.windows.net"
 
 # ENV VAR from Azure App Settings
-#connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 container_name = "model"
 
 # Connect to the blob service
