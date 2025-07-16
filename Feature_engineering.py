@@ -23,9 +23,9 @@ def load_blob_to_memory(blob_name):
     return blob_client.download_blob().readall()
 
 # Load model and encoder from blob into memory
-model_blob = load_blob_to_memory("Stable_xgb_regression_model.pkl")
-encoder_blob = load_blob_to_memory("symbol_label_encoder.pkl")
-features_blob = load_blob_to_memory("Stable_final_used_features.csv")
+model_blob = load_blob_to_memory("1h_prediction_Stable_xgb_regression_model.pkl")
+encoder_blob = load_blob_to_memory("1h_prediction_symbol_label_encoder.pkl")
+features_blob = load_blob_to_memory("1h_prediction_Stable_final_used_features.csv")
 
 # Load into objects
 model = joblib.load(io.BytesIO(model_blob))
