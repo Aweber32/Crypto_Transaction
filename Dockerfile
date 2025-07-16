@@ -9,11 +9,11 @@ ENV AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=
 WORKDIR /app
 
 # Copy the script into the container
-COPY Stable_future_price_prediction.py ./
+COPY Feature_engineering.py ./
 
 # (Optional) Install dependencies if you have a requirements.txt
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Define the default command to run your script
-CMD ["python", "Stable_future_price_prediction.py"]
+CMD ["python", "Feature_engineering.py"]
