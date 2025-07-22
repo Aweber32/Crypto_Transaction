@@ -8,7 +8,7 @@ import io
 import os
 import json
 from datetime import datetime
-
+import numpy as np
 
 # ENV VAR from Azure App Settings
 connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -32,8 +32,6 @@ model = joblib.load(io.BytesIO(model_blob))
 encode_path = joblib.load(io.BytesIO(encoder_blob))
 expected_features = pd.read_csv(io.BytesIO(features_blob))["0"].tolist()
 
-
-
 # Constants
 LOOKBACK_HOURS = 504  # 3 weeks
 BASE_URL = "https://cryptocurrency.azurewebsites.net/api"
@@ -43,13 +41,11 @@ HEADERS = {"Accept": "application/json"}
 df_coin = pd.DataFrame(requests.get(f"{BASE_URL}/CoinData?lookbackHours={LOOKBACK_HOURS}", headers=HEADERS).json())
 df_investor = pd.DataFrame(requests.get(f"{BASE_URL}/InvestorGrade?lookbackHours={LOOKBACK_HOURS}", headers=HEADERS).json())
 df_sentiment = pd.DataFrame(requests.get(f"{BASE_URL}/Sentiment?lookbackHours={LOOKBACK_HOURS}", headers=HEADERS).json())
-df_transaction = pd.DataFrame(requests.get(f"{BASE_URL}/Transaction?lookbackHours={LOOKBACK_HOURS}", headers=HEADERS).json())
 
 # Convert date columns to datetime
 df_coin["date"] = pd.to_datetime(df_coin["date"])
 df_investor["date"] = pd.to_datetime(df_investor["date"])
 df_sentiment["date"] = pd.to_datetime(df_sentiment["date"])
-df_transaction["date"] = pd.to_datetime(df_transaction["date"])
 
 # Floor InvestorGrade date to day
 df_investor["date"] = df_investor["date"].dt.floor("D")
@@ -70,108 +66,78 @@ df = df.merge(df_sentiment, left_on=["symbol", "dateHour"], right_on=["symbol", 
 df["date"] = df["dateHour"]
 df.drop(columns=["dateHour"], inplace=True)
 
-# Feature engineering
+#--- Feature engineering Start ---
 df["sentimentScore"] = df["positiveReddit"] - df["negativeReddit"]
+
 # Lag Features
 for col in ["price", "volume24h", "volumeChange24h", "fearandGreed", "sentimentScore"]:
     df[f"{col}_lag_1"] = df.groupby("symbol")[col].shift(1)
     df[f"{col}_lag_2"] = df.groupby("symbol")[col].shift(2)
+
 # Rolling Features
 df["price_rolling_mean_3h"] = df.groupby("symbol")["price"].transform(lambda x: x.rolling(3).mean())
 df["volume_rolling_std_6h"] = df.groupby("symbol")["volume24h"].transform(lambda x: x.rolling(6).std())
 df["sentiment_rolling_mean_3h"] = df.groupby("symbol")["sentimentScore"].transform(lambda x: x.rolling(3).mean())
-#Momentum Features
+
+# Momentum Features
 df["price_momentum_1h"] = df["price"] - df["price_lag_1"]
 df["sentiment_momentum_1h"] = df["sentimentScore"] - df["sentimentScore_lag_1"]
-# Load In le encoder for symbols Text
+
+# Encode symbol
 df["symbol_encoded"] = encode_path.transform(df["symbol"])
-# Save full history before collapsing
-df_history = df.copy()
-# Merge transaction data into history to get historical buy/sell/hold signals
-df_history = df_history.merge(
-    df_transaction[["symbol", "date", "buy_Sell_Hold_Skip"]],
-    on=["symbol", "date"],
-    how="left"
-)
-#get the latest record by date for each symbol
+
+# Get the latest record by date for each symbol
 df = (
     df.sort_values(by=["symbol_encoded", "date"])
     .groupby("symbol_encoded")
     .last()
     .reset_index()
 )
+
+# --- Models Start --
+# 1h_prediction_Stable
 # Only use expected features
 df_predict = df[expected_features]
 
+# Predict
 prediction = model.predict(df_predict)
-# Prepare the final DataFrame with predictions
-# Inverse transform the symbol_encoded column to get the original symbol names
-df["symbol"] = encode_path.inverse_transform(df["symbol_encoded"])
 
 # Add predictions to DataFrame
-df["predicted_pct_change"] = prediction
+df["Predicted_Price_1h_Stable"] = prediction
 
-# ---- BUY / SELL / HOLD LOGIC ----
-def compute_decision(symbol, current_pred, df_history):
-    df_symbol = df_history[df_history["symbol"] == symbol].sort_values("date", ascending=False)
+# Inverse transform symbol encoding
+df["symbol"] = encode_path.inverse_transform(df["symbol_encoded"])
 
-    if df_symbol.empty:
-        return "buy" if current_pred > 0 else "skip"
+# Replace NaNs with None
+df = df.replace({np.nan: None})
 
-    # Get most recent historical decision if it exists
-    prev_action_row = df_symbol[df_symbol["buy_Sell_Hold_Skip"].notna()]
-    prev_action = prev_action_row.iloc[0]["buy_Sell_Hold_Skip"] if not prev_action_row.empty else None
+# Define engineered features (including prediction)
+engineered_features = [
+    "sentimentScore",
+    "price_lag_1", "price_lag_2",
+    "volume24h_lag_1", "volume24h_lag_2",
+    "volumeChange24h_lag_1", "volumeChange24h_lag_2",
+    "fearandGreed_lag_1", "fearandGreed_lag_2",
+    "sentimentScore_lag_1", "sentimentScore_lag_2",
+    "price_rolling_mean_3h", "volume_rolling_std_6h", "sentiment_rolling_mean_3h",
+    "price_momentum_1h", "sentiment_momentum_1h",
+    "Predicted_Price_1h_Stable"
+]
 
-    if prev_action is None:
-        return "buy" if current_pred > 0 else "skip"
+# --- Post Processing ---
+# Post each row with engineered features
+url = "https://cryptocurrency.azurewebsites.net/api/FeatureEngineering"
 
-    if prev_action in ["buy", "hold"]:
-        total_change = 0
-        for _, row in df_symbol.iterrows():
-            action = row.get("buy_Sell_Hold_Skip")
-            if action not in ["buy", "hold"]:
-                break
-            total_change += row.get("percentChange1h", 0)
-        total_change += current_pred
-
-        if total_change < -1:
-            return "sell"
-        elif total_change > 2:
-            return "sell"
-        else:
-            return "hold"
-
-    if prev_action in ["sell", "skip"]:
-        return "buy" if current_pred > 0 else "skip"
-
-    return "skip"
-
-
-
-# Apply logic
-df["buy_Sell_Hold_Skip"] = df.apply(
-    lambda row: compute_decision(row["symbol"], row["predicted_pct_change"], df_history),
-    axis=1
-)
-
-# Final output
-final_output = df[["symbol", "date", "price", "predicted_pct_change", "buy_Sell_Hold_Skip"]]
-
-# API URL
-url = "https://cryptocurrency.azurewebsites.net/api/Transaction"
-
-# Loop through each row
 for _, row in df.iterrows():
     payload = {
         "id": datetime.now().strftime("%Y%m%d%H%M%S") + row["symbol"],
         "symbol": row["symbol"],
-        "date": row["date"].isoformat(),  # Convert datetime to string
-        "price": row["price"],
-        "Predicted_Price_1h": row["predicted_pct_change"],
-        "buy_Sell_Hold_Skip": row["buy_Sell_Hold_Skip"]
+        "date": row["date"].isoformat() if pd.notnull(row["date"]) else None,
     }
 
+    for col in engineered_features:
+        val = row.get(col)
+        payload[col] = val.isoformat() if isinstance(val, pd.Timestamp) else val
+
     response = requests.post(url, json=payload)
-
-    print(f"Response for {row['symbol']} on {row['date']}: {response.status_code}")
-
+    print(f"Posted {row['symbol']} | Status: {response.status_code}")
