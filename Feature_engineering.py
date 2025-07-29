@@ -244,11 +244,6 @@ for _, row in df.iterrows():
     for col in engineered_features:
         val = row.get(col)
         payload[col] = val.isoformat() if isinstance(val, pd.Timestamp) else val
-    est_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
-    if est_hour.isoformat() == row["date"]:
-        response = requests.post(url, json=payload)
-        print(f"Posted {row['symbol']} | Status: {response.status_code}")
-    else:
-        print(est_hour.isoformat())
-        print(row["date"])
-        print("Date does not match current hour, skipping post for", row["symbol"])
+    response = requests.post(url, json=payload)
+    print(f"Posted {row['symbol']} | Status: {response.status_code}")
+        
